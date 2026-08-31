@@ -12117,7 +12117,7 @@ function SmartDistribution.assetHeld(p, ft)
                     pcall(function() return u.silo:updateFillLevel() end)
                     total = total + (tonumber(u.silo.fillLevel) or 0)
                     if SmartDistribution.debug then
-                        log("assetHeld chaff %s: fillLevel=%s", placeableName(p), tostring(u.silo.fillLevel))
+                        log("[SmartDistribution] assetHeld chaff %s: fillLevel=%s", placeableName(p), tostring(u.silo.fillLevel))
                     end
                 end
             end
@@ -20772,7 +20772,7 @@ end
 function SmartDistribution.bunkerSilageLiters(silo)
     if silo == nil then return 0 end
     if SmartDistribution.debug then
-        log("bunkerSilageLiters %s: state=%s heapFt=%s out=%s",
+        log("[SmartDistribution] bunkerSilageLiters %s: state=%s heapFt=%s out=%s",
             "silo", tostring(silo.state),
             tostring(SmartDistribution.bunkerHeapFillType and SmartDistribution.bunkerHeapFillType(silo)),
             tostring(silo.outputFillType))
@@ -20800,7 +20800,7 @@ function SmartDistribution.bunkerSilageLiters(silo)
     end
     local cached = tonumber(silo.fillLevel) or 0
     if SmartDistribution.debug then
-        log("bunkerSilageLiters READ: area=%s terrain=%s cached=%s",
+        log("[SmartDistribution] bunkerSilageLiters READ: area=%s terrain=%s cached=%s",
             tostring(a ~= nil and a.sx ~= nil), tostring(lv), tostring(cached))
     end
     if lv ~= nil and type(lv) == "number" and lv > 0 then return lv end

@@ -585,7 +585,7 @@ function DistributionStoragePage:buildDetailRows()
     -- DEBUG: confirm the bunker's rows reach the page (SmartDistribution.log is the exposed logger)
     if SmartDistribution.debug and SmartDistribution.isBunkerSiloPlaceable ~= nil
        and SmartDistribution.isBunkerSiloPlaceable(asset) then
-        SmartDistribution.log("buildDetailRows bunker: %d row(s), role=%s",
+        SmartDistribution.log("[SmartDistribution] buildDetailRows bunker: %d row(s), role=%s",
             #self.rows, tostring(self.selectedRole))
     end
 end
