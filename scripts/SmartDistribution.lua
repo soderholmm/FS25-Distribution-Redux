@@ -18547,8 +18547,6 @@ end
 
 function SmartDistribution.drawStorageBar(cell, p, ft, role, side, held)
     if cell == nil or cell.getAttribute == nil then return end
-    -- FIX: Check silo mode to handle fermenting vs open modes
-    local mode = p.spec_silo.mode or ""
     local bg = cell:getAttribute("barBg")
     if bg == nil then return end                       -- a layout without the widget: nothing to do
     local heldT, capT = cell:getAttribute("barHeld"), cell:getAttribute("barCap")
@@ -18606,17 +18604,8 @@ function SmartDistribution.drawStorageBar(cell, p, ft, role, side, held)
     end
     setPalletOverlay(padCount)
 
-    -- FIX: Check if we should show markers during fermenting mode
-    local mode = p.spec_silo.mode or ""
-    local useOutputMode = (side == "output" and mode ~= "FERMENT")
-                         or (side == "input" and false)  -- Input bar always shows stored amount
-    
-    -- FIX: Use storageBarValues always for stored amount display
-    local v = SmartDistribution.storageBarValues(p, ft, role)
-
-    -- Check silo mode to handle fermenting vs open modes
-    local mode = p.spec_silo.mode or ""
-    
+    local v = (side == "output") and SmartDistribution.outputBarValues(p, ft, role, held)
+                                  or SmartDistribution.storageBarValues(p, ft, role)
     -- No resolvable capacity: hide the TRACK rather than draw an empty tank, which would read as
     -- "this holds nothing" when the truth is "DR cannot say". Same rule as the capacity bracket (5.21).
     if v == nil or v.total == nil or v.total <= 0 then
@@ -18661,8 +18650,7 @@ function SmartDistribution.drawStorageBar(cell, p, ft, role, side, held)
     local wantIn  = (side ~= "output")
     local wantOut = (side ~= "input")
     -- XML declaration order is reserve, target, max, so where two coincide the ceiling stays visible.
-    local shouldShowMarkers = mode ~= "FERMENT"
-    setMark("barReserve", v.reserve, wantOut and shouldShowMarkers or true, false)
+    setMark("barReserve", v.reserve, wantOut, false)
     setMark("barTarget",  v.target,  wantIn,  false)
     -- MAX is drawn even when unset: an unconfigured product still HAS a ceiling (the full tank) and the
     -- player should see it exists before moving it. A target or reserve never set has nothing to point at.
