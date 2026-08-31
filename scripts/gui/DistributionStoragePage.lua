@@ -383,17 +383,25 @@ local function setCombinedStatusCell(cell, placeable, ft, window, role)
     local cSep = cell:getAttribute("statusSep")
     local cOut = cell:getAttribute("statusOut")
     if cIn == nil and cOut == nil then return end
+    
+    -- SILOS ARE OUTPUT-ONLY: hide the receive status for silos
+    local isSilo = (SmartDistribution ~= nil and SmartDistribution.isBunkerSiloPlaceable ~= nil and 
+                   SmartDistribution.isBunkerSiloPlaceable(placeable)) or
+                  (placeable ~= nil and placeable.spec_silo ~= nil)
+    
     local inSt, outSt = nil, nil
     if placeable ~= nil and ft ~= nil and SmartDistribution ~= nil and SmartDistribution.assetUid ~= nil then
         local uid = SmartDistribution.assetUid(placeable)
         if uid ~= nil then
-            -- a product BLOCKED on Advanced Inputs is refused at the door whatever the source side says
-            if SmartDistribution.isInputBlocked ~= nil and SmartDistribution.isInputBlocked(
-                   (SmartDistribution.settingUid ~= nil)
-                       and SmartDistribution.settingUid(placeable, ft, role) or uid, ft) then
-                inSt = "BLOCKED"
-            elseif SmartDistribution.inputLinkStatus ~= nil then
-                inSt = SmartDistribution.inputLinkStatus(uid, ft, window)
+            -- Skip input status for silos (they only output, never receive)
+            if not isSilo then
+                if SmartDistribution.isInputBlocked ~= nil and SmartDistribution.isInputBlocked(
+                       (SmartDistribution.settingUid ~= nil)
+                           and SmartDistribution.settingUid(placeable, ft, role) or uid, ft) then
+                    inSt = "BLOCKED"
+                elseif SmartDistribution.inputLinkStatus ~= nil then
+                    inSt = SmartDistribution.inputLinkStatus(uid, ft, window)
+                end
             end
             if SmartDistribution.outputLinkStatus ~= nil then
                 outSt = SmartDistribution.outputLinkStatus(placeable, ft, window, role)
@@ -553,6 +561,12 @@ function DistributionStoragePage:buildDetailRows()
     for ft in pairs(fts) do ordered[#ordered + 1] = ft end
     table.sort(ordered)
     self.rows = buildProductRows(asset, ordered, self.selectedRole)
+    -- DEBUG: confirm the bunker's rows reach the page (SmartDistribution.log is the exposed logger)
+    if SmartDistribution.debug and SmartDistribution.isBunkerSiloPlaceable ~= nil
+       and SmartDistribution.isBunkerSiloPlaceable(asset) then
+        SmartDistribution.log("buildDetailRows bunker: %d row(s), role=%s",
+            #self.rows, tostring(self.selectedRole))
+    end
 end
 
 function DistributionStoragePage:selectAsset(index)
@@ -565,23 +579,11 @@ function DistributionStoragePage:selectAsset(index)
     if self.assetTitleElement ~= nil then
         self.assetTitleElement:setText(a ~= nil and (a.name or ""):upper() or "")
     end
-    -- A bunker silo has NO input side at all, so the whole INCOMING block is hidden for one rather than
-    -- shown empty. DR can never deposit into a terrain heap (no sanctioned fill-level API, see the bunker
-    -- section in SmartDistribution.lua), so an incoming table here would advertise something that cannot
-    -- happen. Header and list are hidden together; nil-guarded because the subclasses that inherit this
-    -- selectAsset (Markets) use their own layout and have neither element.
-    -- NOTE the block is absolutely positioned, so the outgoing table below does NOT move up into the gap.
-    local noInputs = self.selectedAsset ~= nil and SmartDistribution ~= nil
-        and SmartDistribution.isBunkerSiloPlaceable ~= nil
-        and SmartDistribution.isBunkerSiloPlaceable(self.selectedAsset)
-    if self.inputHeaderRow ~= nil and self.inputHeaderRow.setVisible ~= nil then
-        self.inputHeaderRow:setVisible(not noInputs)
-    end
-    if self.inputPanel ~= nil and self.inputPanel.setVisible ~= nil then
-        self.inputPanel:setVisible(not noInputs)
-    end
-    -- keep the contextual footer on the output side; the input list cannot be focused while hidden
-    if noInputs then self._focusRole = "output" end
+    -- THE MERGED TABLE IS THE ONLY PRODUCT LIST, and it lives INSIDE inputPanel (see the XML) --
+    -- so hiding that panel for a bunker hid its product rows too. The old two-list layout had a
+    -- separate output list, which is why this used to work. The merged row already suppresses the
+    -- IN status for silos (setCombinedStatusCell), so nothing is lost by always showing the table.
+    -- The footer's contextual default stays "output", which is right for every building here.
     self:buildDetailRows()
     self.detailIndex = 1
     self.inputIndex = 1
@@ -668,6 +670,17 @@ function DistributionStoragePage:populateCellForItemInSection(list, section, ind
     -- rather than writing into nil cells. Husbandry and Productions keep their own two-list layouts and
     -- their own populate overrides, so nothing there is touched.
     applyRowHighlight(cell, true)
+    -- BUNKER INPUT ROW: while the heap holds anything OTHER than the declared OUTPUT, the row
+    -- is informational -- DR cannot move that material (bunkerTakeSilage only takes the output
+    -- type, from an open silo), so a mode here would be inert. Hide the arrows and label the
+    -- row plainly; they return the moment the heap converts to the output type.
+    local bunkerInputRow = false
+    if SmartDistribution.isBunkerSiloPlaceable ~= nil and SmartDistribution.isBunkerSiloPlaceable(self.selectedAsset)
+       and SmartDistribution.bunkerOutputFillType ~= nil
+       and row.ft ~= SmartDistribution.bunkerOutputFillType(self.selectedAsset) then
+        bunkerInputRow = true
+    end
+
     setc("fillName", row.name)
     -- STORAGE TYPE, abbreviated. Role-scoped like every other read on this row: without the role a
     -- building that is a silo AND a pallet store answers the silo's rows from the SHED pool (5.65 /
@@ -683,19 +696,23 @@ function DistributionStoragePage:populateCellForItemInSection(list, section, ind
     -- stepped. Answering that means validModeRing -> modeHasEndpoint, i.e. a placeableSystem scan per
     -- row per refresh -- exactly the cost 5.46 / 5.52 removed from this path. A building with only one
     -- valid mode simply does nothing when clicked, which is cheaper than being told so.
-    setModeArrows(cell, row.ft)
+    setModeArrows(cell, bunkerInputRow and nil or row.ft)
 
     local modeCell = cell:getAttribute("modeText")
     if modeCell ~= nil then
-        -- palletizable flag passed so a pallet output reads "Hold Pallets" rather than a bare "Hold",
-        -- matching the Productions tab for the same pair of modes
-        local pal = (SmartDistribution.holdLabelFlag ~= nil)
-            and SmartDistribution.holdLabelFlag(self.selectedAsset, row.ft) or false
-        local text = SmartDistribution.modeName(SmartDistribution.resolvedAssetMode(self.selectedAsset, row.ft, self.selectedRole), pal)
-        local timing = (SmartDistribution.sellTimingLabel ~= nil)
-            and SmartDistribution.sellTimingLabel(self.selectedAsset, row.ft, nil, self.selectedRole) or nil
-        if timing ~= nil then text = text .. "  -  " .. timing end
-        modeCell:setText(text)
+        if bunkerInputRow then
+            modeCell:setText(SmartDistribution.l10n("dr_bunker_filling", "Filling - not distributable yet"))
+            if modeCell.setTextColor ~= nil then modeCell:setTextColor(0.95, 0.65, 0.20, 1) end
+        else
+            local pal = (SmartDistribution.holdLabelFlag ~= nil)
+                and SmartDistribution.holdLabelFlag(self.selectedAsset, row.ft) or false
+            local text = SmartDistribution.modeName(SmartDistribution.resolvedAssetMode(self.selectedAsset, row.ft, self.selectedRole), pal)
+            local timing = (SmartDistribution.sellTimingLabel ~= nil)
+                and SmartDistribution.sellTimingLabel(self.selectedAsset, row.ft, nil, self.selectedRole) or nil
+            if timing ~= nil then text = text .. "  -  " .. timing end
+            modeCell:setText(text)
+            if modeCell.setTextColor ~= nil then modeCell:setTextColor(1, 1, 1, 1) end
+        end
     end
     -- BOTH directions in the one status cell now that there is one row per product
     setCombinedStatusCell(cell, self.selectedAsset, row.ft, self:currentWindow(), self.selectedRole)

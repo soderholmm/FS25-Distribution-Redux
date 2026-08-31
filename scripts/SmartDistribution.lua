@@ -3839,6 +3839,12 @@ function SmartDistribution.visibleProducts(p, ordered, role)
     if SmartDistribution.advancedEnabled == nil or not SmartDistribution.advancedEnabled() then
         return ordered, 0
     end
+    -- A BUNKER SILO'S ROWS ARE INFORMATIONAL: DR never delivers INTO a terrain heap, so an
+    -- input-block entry can never mean anything there -- and hiding its rows would hide the
+    -- only view of what the bunker holds. Show them unconditionally.
+    if SmartDistribution.isBunkerSiloPlaceable ~= nil and SmartDistribution.isBunkerSiloPlaceable(p) then
+        return ordered, 0
+    end
     local uid = (SmartDistribution.roleUid ~= nil) and SmartDistribution.roleUid(p, role) or nil
     if uid == nil or SmartDistribution.isInputBlocked == nil then return ordered, 0 end
     local out, hidden = {}, 0
@@ -10800,9 +10806,37 @@ local function siloFillTypes(silo)
             for ft in pairs(sup) do fts[ft] = true; any = true end
         end
     end
+    if SmartDistribution.isBunkerSiloPlaceable(silo) then
+    -- ONE ROW: whatever the heap physically holds right now. Filling -> the INPUT type
+    -- (chaff / organic waste); opened -> the OUTPUT (silage / compost). The row follows
+    -- the material, so the table always shows exactly what is in the silo -- the other
+    -- type appears the moment the heap converts to it.
+        local heapFt = SmartDistribution.bunkerHeapFillType(silo)
+        if heapFt ~= nil and heapFt > 0 then
+            fts[heapFt] = true; any = true
+        else
+            -- terrain unreadable (e.g. an empty bunker): declare both, as before
+            local out = SmartDistribution.bunkerOutputFillType(silo)
+            if out ~= nil then fts[out] = true; any = true end
+            local inp = SmartDistribution.bunkerInputFillType(silo)
+            if inp ~= nil then fts[inp] = true; any = true end
+        end
+    end
     if not any and silo.fillTypes ~= nil then          -- fallback: placeable-level supported set
         for ft in pairs(silo.fillTypes) do fts[ft] = true; any = true end
     end
+
+    -- DEBUG: log bunker fill-type resolution (what the Storage tab would list for this silo)
+    if SmartDistribution.debug and SmartDistribution.isBunkerSiloPlaceable(silo) then
+        local dbg = {}
+        for ft in pairs(fts) do dbg[#dbg + 1] = tostring(ft) end
+        log("siloFillTypes bunker %s: out=%s in=%s rows={%s}",
+            placeableName(silo),
+            tostring(SmartDistribution.bunkerOutputFillType and SmartDistribution.bunkerOutputFillType(silo)),
+            tostring(SmartDistribution.bunkerInputFillType and SmartDistribution.bunkerInputFillType(silo)),
+            table.concat(dbg, ", "))
+    end
+
     return fts, any
 end
 
@@ -10875,6 +10909,12 @@ end
 
 local function assetConfigFillTypes(p)
     if p == nil then return {}, false end
+
+    -- DEBUG: confirm the storage page reaches this function for bunkers
+    if SmartDistribution.debug and SmartDistribution.isBunkerSiloPlaceable(p) then
+        log("assetMenuFillTypes role=%s building=%s", tostring(role), placeableName(p))
+    end
+    
     -- ABOVE the production branch, which would otherwise answer with the fake identity lines' outputs.
     -- siloFillTypes reads getAllStorages, which now folds in the pass-through tank, so this lists exactly
     -- what the building can hold -- the same answer any other silo gives.
@@ -12052,10 +12092,45 @@ function SmartDistribution.assetHeld(p, ft)
     if p == nil or ft == nil then return 0 end
     -- bunker silos own no Storage; their held product comes from the terrain heap, and only counts once
     -- the silo is uncovered (bunkerSilageLiters enforces that)
-    if SmartDistribution.isBunkerSiloPlaceable(p) then
+        if SmartDistribution.isBunkerSiloPlaceable(p) then
+        -- OPEN bunker: the OUTPUT (silage / compost) is what the terrain heap holds, counted only when uncovered.
         if ft == SmartDistribution.bunkerOutputFillType(p) then return SmartDistribution.bunkerPlaceableSilage(p) end
+        -- FILLING / FERMENTING bunker: the heap still holds the INPUT type (chaff / organic waste).
+        -- Call updateFillLevel() first so the silo's cached level is fresh (it can be nil/stale otherwise),
+        -- then fall back to a direct terrain read if the cache still returns nothing.
+        if ft == SmartDistribution.bunkerInputFillType(p) then
+            local total = 0
+            for _, u in ipairs(SmartDistribution.bunkerUnits()) do
+                if u.p == p then
+                    pcall(function() return u.silo:updateFillLevel() end)
+                    total = total + (tonumber(u.silo.fillLevel) or 0)
+                    if SmartDistribution.debug then
+                        log("assetHeld chaff %s: fillLevel=%s", placeableName(p), tostring(u.silo.fillLevel))
+                    end
+                end
+            end
+            if total > 0 then return total end
+            -- Fallback: read the heap directly with whatever fill type is actually there
+            local bs   = p.spec_bunkerSilo
+            local silo = bs ~= nil and bs.bunkerSilo or nil
+            if silo == nil then
+                local ms = p.spec_multiBunkerSilo
+                if ms ~= nil and type(ms.bunkerSilos) == "table" then silo = ms.bunkerSilos[1] end
+            end
+            if silo ~= nil then
+                local heapFt = SmartDistribution.bunkerHeapFillType(silo)
+                local area   = SmartDistribution.bunkerReadArea(silo)
+                local ok, util = pcall(function() return DensityMapHeightUtil end)
+                if heapFt ~= nil and area ~= nil and ok and type(util) == "table"
+                   and type(util.getFillLevelAtArea) == "function" then
+                    local okL, lv = pcall(util.getFillLevelAtArea, heapFt, area.sx, area.sz, area.wx, area.wz, area.hx, area.hz)
+                    if okL and type(lv) == "number" and lv > 0 then return lv end
+                end
+            end
+        end
         return 0
     end
+
     local total = 0
     local okS, storages = pcall(getAllStorages, p)
     if okS and type(storages) == "table" then
@@ -18638,6 +18713,22 @@ function SmartDistribution.storageBarValues(p, ft, role)
     if p == nil or ft == nil then return nil end
     -- HELD FIRST, on the role's own basis, so every other figure here is read against the same container.
     local held = SmartDistribution.inputHeldLevel(p, ft, role) or 0
+
+    -- BUNKER SILO: no Storage objects, so capacity comes from the silo object itself.
+    -- The bar then reads "12,000 L (40%)" against the bunker's real size -- which is
+    -- exactly the fill/compression level the player wants to see while filling.
+        if SmartDistribution.isBunkerSiloPlaceable(p) then
+        local cap = 0
+        for _, u in ipairs(SmartDistribution.bunkerUnits()) do
+            if u.p == p then cap = cap + (tonumber(u.silo.capacity) or 0) end
+        end
+        if cap <= 0 then cap = held end
+        return { total = cap, held = held, others = 0, capL = cap, pct = 100,
+                 blocked = false, target = nil, reserve = nil }
+    end
+
+
+
     local total, others = nil, 0
 
     local cap, pool = SmartDistribution.inputProductCapacity(p, ft, role)
@@ -20386,6 +20477,21 @@ function SmartDistribution.bunkerOutputFillType(p)
     return g_fillTypeManager ~= nil and g_fillTypeManager:getFillTypeIndexByName("SILAGE") or nil
 end
 
+-- What a bunker silo ACCEPTS to ferment (CHAFF on vanilla, ORGANICWASTE on a compost silo).
+-- The mirror of bunkerOutputFillType: reads the spec's inputFillType, falls back to CHAFF by name.
+function SmartDistribution.bunkerInputFillType(p)
+    if p == nil then return nil end
+    local bs   = p.spec_bunkerSilo
+    local silo = bs ~= nil and bs.bunkerSilo or nil
+    if silo == nil then
+        local ms = p.spec_multiBunkerSilo
+        if ms ~= nil and type(ms.bunkerSilos) == "table" then silo = ms.bunkerSilos[1] end
+    end
+    local ft = silo ~= nil and silo.inputFillType or nil
+    if type(ft) == "number" and ft > 0 then return ft end
+    return g_fillTypeManager ~= nil and g_fillTypeManager:getFillTypeIndexByName("CHAFF") or nil
+end
+
 -- Total network-available (uncovered) silage across every bay on this placeable.
 function SmartDistribution.bunkerPlaceableSilage(p)
     if not SmartDistribution.isBunkerSiloPlaceable(p) then return 0 end
@@ -20633,6 +20739,13 @@ end
 -- Anything still filling or sealed reads 0 -- it is not product yet.
 function SmartDistribution.bunkerSilageLiters(silo)
     if silo == nil then return 0 end
+    if SmartDistribution.debug then
+        log("bunkerSilageLiters %s: state=%s heapFt=%s out=%s",
+            "silo", tostring(silo.state),
+            tostring(SmartDistribution.bunkerHeapFillType and SmartDistribution.bunkerHeapFillType(silo)),
+            tostring(silo.outputFillType))
+    end
+
     if silo.state ~= SmartDistribution.BUNKER_STATE_DRAIN then return 0 end
     local heapFt = SmartDistribution.bunkerHeapFillType(silo)
     -- What this BAY declares it makes, resolved per-silo. This used to read SILAGE by name and fall back to
@@ -20648,12 +20761,20 @@ function SmartDistribution.bunkerSilageLiters(silo)
     -- against its walls.
     local a = SmartDistribution.bunkerReadArea(silo)
     local ok, util = pcall(function() return DensityMapHeightUtil end)
+    local lv = nil
     if ok and type(util) == "table" and type(util.getFillLevelAtArea) == "function" and a ~= nil then
-        local okL, lv = pcall(util.getFillLevelAtArea, silage, a.sx, a.sz, a.wx, a.wz, a.hx, a.hz)
-        if okL and type(lv) == "number" and lv > 0 then return lv end
+        local okL, v = pcall(util.getFillLevelAtArea, silage, a.sx, a.sz, a.wx, a.wz, a.hx, a.hz)
+        if okL then lv = v end
     end
-    return tonumber(silo.fillLevel) or 0     -- cached fallback (probe-confirmed to match to the litre)
+    local cached = tonumber(silo.fillLevel) or 0
+    if SmartDistribution.debug then
+        log("bunkerSilageLiters READ: area=%s terrain=%s cached=%s",
+            tostring(a ~= nil and a.sx ~= nil), tostring(lv), tostring(cached))
+    end
+    if lv ~= nil and type(lv) == "number" and lv > 0 then return lv end
+    return cached     -- cached fallback (probe-confirmed to match to the litre)
 end
+
 
 -- The sub-rectangle covering `frac` of the way along the silo from its start edge (full width). Removing
 -- from a slice is how DR meters a withdrawal: the engine's removeFromGroundByArea takes an AREA, never a
