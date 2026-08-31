@@ -10811,7 +10811,19 @@ local function siloFillTypes(silo)
     -- (chaff / organic waste); opened -> the OUTPUT (silage / compost). The row follows
     -- the material, so the table always shows exactly what is in the silo -- the other
     -- type appears the moment the heap converts to it.
-        local heapFt = SmartDistribution.bunkerHeapFillType(silo)
+    -- bunkerHeapFillType / bunkerReadArea need the BunkerSilo OBJECT, not the
+    -- placeable. A placeable carries it under spec_bunkerSilo.bunkerSilo (single)
+    -- or spec_multiBunkerSilo.bunkerSilos[i] (multi-bunkers like the Highlands).
+        local bs    = silo.spec_bunkerSilo
+        local bSilo = bs ~= nil and bs.bunkerSilo or nil
+        if bSilo == nil then
+            local ms = silo.spec_multiBunkerSilo
+            if ms ~= nil and type(ms.bunkerSilos) == "table" and #ms.bunkerSilos > 0 then
+                bSilo = ms.bunkerSilos[1]
+            end
+        end
+        local heapFt = bSilo ~= nil and SmartDistribution.bunkerHeapFillType(bSilo)
+
         if heapFt ~= nil and heapFt > 0 then
             fts[heapFt] = true; any = true
         else
@@ -18535,6 +18547,8 @@ end
 
 function SmartDistribution.drawStorageBar(cell, p, ft, role, side, held)
     if cell == nil or cell.getAttribute == nil then return end
+    -- FIX: Check silo mode to handle fermenting vs open modes
+    local mode = p.spec_silo.mode or ""
     local bg = cell:getAttribute("barBg")
     if bg == nil then return end                       -- a layout without the widget: nothing to do
     local heldT, capT = cell:getAttribute("barHeld"), cell:getAttribute("barCap")
@@ -18592,8 +18606,17 @@ function SmartDistribution.drawStorageBar(cell, p, ft, role, side, held)
     end
     setPalletOverlay(padCount)
 
-    local v = (side == "output") and SmartDistribution.outputBarValues(p, ft, role, held)
-                                  or SmartDistribution.storageBarValues(p, ft, role)
+    -- FIX: Check if we should show markers during fermenting mode
+    local mode = p.spec_silo.mode or ""
+    local useOutputMode = (side == "output" and mode ~= "FERMENT")
+                         or (side == "input" and false)  -- Input bar always shows stored amount
+    
+    -- FIX: Use storageBarValues always for stored amount display
+    local v = SmartDistribution.storageBarValues(p, ft, role)
+
+    -- Check silo mode to handle fermenting vs open modes
+    local mode = p.spec_silo.mode or ""
+    
     -- No resolvable capacity: hide the TRACK rather than draw an empty tank, which would read as
     -- "this holds nothing" when the truth is "DR cannot say". Same rule as the capacity bracket (5.21).
     if v == nil or v.total == nil or v.total <= 0 then
@@ -18638,7 +18661,8 @@ function SmartDistribution.drawStorageBar(cell, p, ft, role, side, held)
     local wantIn  = (side ~= "output")
     local wantOut = (side ~= "input")
     -- XML declaration order is reserve, target, max, so where two coincide the ceiling stays visible.
-    setMark("barReserve", v.reserve, wantOut, false)
+    local shouldShowMarkers = mode ~= "FERMENT"
+    setMark("barReserve", v.reserve, wantOut and shouldShowMarkers or true, false)
     setMark("barTarget",  v.target,  wantIn,  false)
     -- MAX is drawn even when unset: an unconfigured product still HAS a ceiling (the full tank) and the
     -- player should see it exists before moving it. A target or reserve never set has nothing to point at.
@@ -20507,6 +20531,26 @@ function SmartDistribution.bunkerPlaceableSilage(p)
         end
     end
     return total
+end
+
+-- Human-readable stage of a bunker silo's heap for display purposes.
+--   "filling"     - state 0 (FILL): actively being filled with input material
+--   "fermenting"  - states 1-2 (CLOSED / FERMENTED): sealed, material converting
+--   "draining"    - state 3 (DRAIN): open, output product available
+-- Returns nil for a non-bunker placeable.
+function SmartDistribution.bunkerStage(p)
+    if p == nil or not SmartDistribution.isBunkerSiloPlaceable(p) then return nil end
+    local state = nil
+    if p.spec_bunkerSilo ~= nil and p.spec_bunkerSilo.bunkerSilo ~= nil then
+        state = p.spec_bunkerSilo.bunkerSilo.state
+    elseif p.spec_multiBunkerSilo ~= nil and type(p.spec_multiBunkerSilo.bunkerSilos) == "table"
+        and #p.spec_multiBunkerSilo.bunkerSilos > 0 then
+        state = p.spec_multiBunkerSilo.bunkerSilos[1].state
+    end
+    if state == nil then return nil end
+    if state == SmartDistribution.BUNKER_STATE_DRAIN then return "draining" end
+    if state == SmartDistribution.BUNKER_STATE_FILL then return "filling" end
+    return "fermenting"  -- BUNKER_STATE_CLOSED (1) and BUNKER_STATE_FERMENTED (2)
 end
 
 -- Take up to `wanted` litres of silage from this placeable's uncovered bays. Removal is metered by

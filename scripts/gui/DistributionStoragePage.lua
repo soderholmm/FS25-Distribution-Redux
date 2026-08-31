@@ -691,17 +691,38 @@ function DistributionStoragePage:populateCellForItemInSection(list, section, ind
     local e = self:windowStats(row.ft)
     setc("recvText", fmtV(e.received))
     setc("distText", outTotalText(e))
-    setStorageBar(cell, self.selectedAsset, row.ft, self.selectedRole)
-    -- Arrows are shown for every real output row WITHOUT asking whether the mode can actually be
-    -- stepped. Answering that means validModeRing -> modeHasEndpoint, i.e. a placeableSystem scan per
-    -- row per refresh -- exactly the cost 5.46 / 5.52 removed from this path. A building with only one
-    -- valid mode simply does nothing when clicked, which is cheaper than being told so.
+    -- Pass the held value explicitly so drawStorageBar doesn't have to recompute it
+    -- (and for bunkers, so the input-material terrain level reaches the bar instead of
+    -- silo.fillLevel, which is 0 for the output type during fermentation).
+    local barHeld = (bunkerInputRow or SmartDistribution.isBunkerSiloPlaceable ~= nil
+                     and SmartDistribution.isBunkerSiloPlaceable(self.selectedAsset))
+                    and SmartDistribution.assetHeld ~= nil
+                    and SmartDistribution.assetHeld(self.selectedAsset, row.ft) or nil
+    setStorageBar(cell, self.selectedAsset, row.ft, self.selectedRole, nil, barHeld)
+
+    -- Arrows STAY HIDDEN on a bunker's filling/fermenting row. The mode can't act yet
+    -- (bunkerTakeSilage only pulls the output type from an open silo), and showing
+    -- live arrows that change an inert setting would only confuse. They return when the
+    -- heap converts to the output type and bunkerInputRow goes false.
+    -- setModeArrows also clears sdFillType to nil, which stepRowMode (line 877) rejects,
+    -- so the arrows are inert even if somehow still visible.
     setModeArrows(cell, bunkerInputRow and nil or row.ft)
 
     local modeCell = cell:getAttribute("modeText")
     if modeCell ~= nil then
         if bunkerInputRow then
-            modeCell:setText(SmartDistribution.l10n("dr_bunker_filling", "Filling - not distributable yet"))
+            -- Stage-aware label: "Filling", "Fermenting", or "Fermented - uncover to access"
+            local stage = (SmartDistribution.bunkerStage ~= nil)
+                and SmartDistribution.bunkerStage(self.selectedAsset) or nil
+            local label
+            if stage == "fermenting" then
+                label = SmartDistribution.l10n("dr_bunker_fermenting", "Fermenting")
+            elseif stage == "fermented" then
+                label = SmartDistribution.l10n("dr_bunker_fermented", "Fermented - uncover to access")
+            else
+                label = SmartDistribution.l10n("dr_bunker_filling", "Filling")
+            end
+            modeCell:setText(label)
             if modeCell.setTextColor ~= nil then modeCell:setTextColor(0.95, 0.65, 0.20, 1) end
         else
             local pal = (SmartDistribution.holdLabelFlag ~= nil)
@@ -714,6 +735,9 @@ function DistributionStoragePage:populateCellForItemInSection(list, section, ind
             if modeCell.setTextColor ~= nil then modeCell:setTextColor(1, 1, 1, 1) end
         end
     end
+
+
+
     -- BOTH directions in the one status cell now that there is one row per product
     setCombinedStatusCell(cell, self.selectedAsset, row.ft, self:currentWindow(), self.selectedRole)
 end
