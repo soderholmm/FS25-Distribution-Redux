@@ -12104,7 +12104,7 @@ function SmartDistribution.assetHeld(p, ft)
     if p == nil or ft == nil then return 0 end
     -- bunker silos own no Storage; their held product comes from the terrain heap, and only counts once
     -- the silo is uncovered (bunkerSilageLiters enforces that)
-        if SmartDistribution.isBunkerSiloPlaceable(p) then
+    if SmartDistribution.isBunkerSiloPlaceable(p) then
         -- OPEN bunker: the OUTPUT (silage / compost) is what the terrain heap holds, counted only when uncovered.
         if ft == SmartDistribution.bunkerOutputFillType(p) then return SmartDistribution.bunkerPlaceableSilage(p) end
         -- FILLING / FERMENTING bunker: the heap still holds the INPUT type (chaff / organic waste).

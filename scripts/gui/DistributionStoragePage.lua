@@ -116,22 +116,43 @@ end
 local MODE_ARROWS = { "modePrev", "modeNext" }
 
 -- Bind the arrows on ONE row, and show or hide them.
---
--- THE FILL TYPE IS STASHED ON THE BUTTON ITSELF, and that is forced rather than chosen: the onClick
--- callback is SHARED by every cloned row, because ButtonElement:copyAttributes copies one function
--- REFERENCE into all of them. So whatever populate leaves on the element is the handler's only way to
--- know which product it is acting on.
--- Deliberately the ft and NOT the row index: these lists re-enumerate on a timer, so an index captured
--- at populate can point at a different product by the time it is clicked -- the same reason the
--- Overview matches double-clicks on uid|ft identity rather than list position (5.37).
-local function setModeArrows(cell, ft)
+-- The function now receives the *asset* being displayed so it can decide whether the
+-- asset is a bunker‑silo that is currently filling or fermenting.
+local function setModeArrows(cell, ft, asset)
+    --------------------------------------------------------------------
+    -- 1) Existing rule – hide when there is no fill‑type.
+    --------------------------------------------------------------------
+    local hideArrows = (ft == nil)
+
+    --------------------------------------------------------------------
+    -- 2) New rule – hide when the asset is a bunker‑silo in a
+    --    non‑editable stage (filling / fermenting).
+    --------------------------------------------------------------------
+    if not hideArrows and asset ~= nil
+       and SmartDistribution ~= nil
+       and SmartDistribution.isBunkerSiloPlaceable ~= nil
+       and SmartDistribution.bunkerStage ~= nil
+       and SmartDistribution.isBunkerSiloPlaceable(asset) then
+
+        local stage = SmartDistribution.bunkerStage(asset)
+        if stage == "filling" or stage == "fermenting" then
+            hideArrows = true
+        end
+    end
+
+    --------------------------------------------------------------------
+    -- 3) Apply the visibility to each arrow button.
+    --    When hidden we also clear the stored fill‑type so that a click
+    --    cannot act on a stale value (mirrors the original `ft == nil`
+    --    behaviour).
+    --------------------------------------------------------------------
     for i = 1, #MODE_ARROWS do
         local b = cell:getAttribute(MODE_ARROWS[i])
         if b ~= nil then
-            b.sdFillType = ft
-            -- Cells are RECYCLED, so a row with no mode to cycle (the "+N blocked" notice) must hide
-            -- these actively or it inherits the arrows of whichever product row last used the slot.
-            if b.setVisible ~= nil then b:setVisible(ft ~= nil) end
+            b.sdFillType = hideArrows and nil or ft
+            if b.setVisible ~= nil then
+                b:setVisible(not hideArrows)
+            end
         end
     end
 end
@@ -642,7 +663,7 @@ function DistributionStoragePage:populateCellForItemInSection(list, section, ind
     if row == nil then return end
     if row.notice ~= nil then
         renderNoticeRow(cell, row.notice, "inputs")   -- one table, one notice; blocking is input-side
-        setModeArrows(cell, nil)                       -- notice row has no mode: hide the arrows
+        setModeArrows(cell, nil, self.selectedAsset)                       -- notice row has no mode: hide the arrows
         return
     end
     hideNoticeRow(cell)
@@ -691,13 +712,61 @@ function DistributionStoragePage:populateCellForItemInSection(list, section, ind
     local e = self:windowStats(row.ft)
     setc("recvText", fmtV(e.received))
     setc("distText", outTotalText(e))
-    -- Pass the held value explicitly so drawStorageBar doesn't have to recompute it
-    -- (and for bunkers, so the input-material terrain level reaches the bar instead of
-    -- silo.fillLevel, which is 0 for the output type during fermentation).
-    local barHeld = (bunkerInputRow or SmartDistribution.isBunkerSiloPlaceable ~= nil
-                     and SmartDistribution.isBunkerSiloPlaceable(self.selectedAsset))
-                    and SmartDistribution.assetHeld ~= nil
-                    and SmartDistribution.assetHeld(self.selectedAsset, row.ft) or nil
+    -- Determine the held amount to show in the storage bar.
+    -- For a bunker silo that is filling/fermenting we want to display the
+    -- amount of material actually present in the heap (the INPUT fill type)
+    -- even when the row being rendered is the OUTPUT fill type.
+    local barHeld = nil
+    local outFT = nil
+    local inFT = nil
+    if SmartDistribution.assetHeld ~= nil then
+        barHeld = SmartDistribution.assetHeld(self.selectedAsset, row.ft)
+        if SmartDistribution.isBunkerSiloPlaceable ~= nil
+           and SmartDistribution.isBunkerSiloPlaceable(self.selectedAsset)
+           and SmartDistribution.bunkerStage ~= nil then
+            local stage = SmartDistribution.bunkerStage(self.selectedAsset)
+            if stage == "filling" or stage == "fermenting" then
+                outFT = SmartDistribution.bunkerOutputFillType ~= nil
+                        and SmartDistribution.bunkerOutputFillType(self.selectedAsset) or nil
+                if outFT ~= nil and row.ft == outFT then
+                    inFT = SmartDistribution.bunkerInputFillType ~= nil
+                           and SmartDistribution.bunkerInputFillType(self.selectedAsset) or nil
+                    if inFT == nil then
+                        inFT = 119  -- temporary; replace with dynamic when working
+                    end
+                    if inFT ~= nil then
+                        barHeld = SmartDistribution.assetHeld(self.selectedAsset, inFT) or 0
+                    end
+                end
+            end
+        end
+    end
+    if barHeld == nil then barHeld = 0 end
+    -- Force bunker fermenting/filling rows to show actual heap amount
+    if SmartDistribution.bunkerStage ~= nil and SmartDistribution.isBunkerSiloPlaceable ~= nil
+       and SmartDistribution.isBunkerSiloPlaceable(self.selectedAsset) then
+        local stage = SmartDistribution.bunkerStage(self.selectedAsset)
+        if stage == "filling" or stage == "fermenting" then
+            local bs = self.selectedAsset.spec_bunkerSilo
+            local silo = bs ~= nil and bs.bunkerSilo or nil
+            if silo == nil then
+                local ms = self.selectedAsset.spec_multiBunkerSilo
+                if ms ~= nil and type(ms.bunkerSilos) == "table" then silo = ms.bunkerSilos[1] end
+            end
+            if silo ~= nil then
+                local lvl = tonumber(silo.fillLevel) or 0
+                if lvl > 0 then barHeld = lvl end
+            end
+        end
+    end
+    if SmartDistribution.debug then
+        log("[SmartDistribution] barHeld=%s stage=%s ft=%s inFT=%s outFT=%s",
+            tostring(barHeld),
+            tostring(SmartDistribution.bunkerStage ~= nil and SmartDistribution.bunkerStage(self.selectedAsset) or "N/A"),
+            tostring(row.ft),
+            tostring(inFT or "N/A"),
+            tostring(outFT or "N/A"))
+    end
     setStorageBar(cell, self.selectedAsset, row.ft, self.selectedRole, nil, barHeld)
 
     -- Arrows STAY HIDDEN on a bunker's filling/fermenting row. The mode can't act yet
@@ -706,7 +775,7 @@ function DistributionStoragePage:populateCellForItemInSection(list, section, ind
     -- heap converts to the output type and bunkerInputRow goes false.
     -- setModeArrows also clears sdFillType to nil, which stepRowMode (line 877) rejects,
     -- so the arrows are inert even if somehow still visible.
-    setModeArrows(cell, bunkerInputRow and nil or row.ft)
+    setModeArrows(cell, bunkerInputRow and nil or row.ft, self.selectedAsset)
 
     local modeCell = cell:getAttribute("modeText")
     if modeCell ~= nil then
@@ -1236,9 +1305,9 @@ function DistributionAnimalHusbandryPage:populateCellForItemInSection(list, sect
         setStatusCell(cell, self.selectedAsset, row.ft, self:currentWindow(), self.selectedRole)
     elseif list == self.outputList then
         local row = self.outputRows[index]; if row == nil then return end
-        if row.notice ~= nil then renderNoticeRow(cell, row.notice, "outputs"); setModeArrows(cell, nil); return end
+        if row.notice ~= nil then renderNoticeRow(cell, row.notice, "outputs"); setModeArrows(cell, nil, self.selectedAsset); return end
         hideNoticeRow(cell)
-        setModeArrows(cell, row.ft)                    -- in-row mode arrows, as on the Silos tab
+        setModeArrows(cell, row.ft, self.selectedAsset)                    -- in-row mode arrows, as on the Silos tab
         applyRowHighlight(cell, (self._focusRole or "output") ~= "input")
         setIcon(row.ft); setc("fillName", row.name)
         local e = self:windowStats(row.ft)
@@ -1362,11 +1431,11 @@ function DistributionMarketsPage:populateCellForItemInSection(list, section, ind
     if row == nil then return end
     if row.notice ~= nil then
         renderNoticeRow(cell, row.notice, "inputs")   -- one table, one notice; blocking is input-side
-        setModeArrows(cell, nil)                       -- notice row has no timing: hide the arrows
+        setModeArrows(cell, nil, self.selectedAsset)                       -- notice row has no timing: hide the arrows
         return
     end
     hideNoticeRow(cell)
-    setModeArrows(cell, row.ft)   -- one table, so every real row carries the timing arrows
+    setModeArrows(cell, row.ft, self.selectedAsset)   -- one table, so every real row carries the timing arrows
     local iconCell = cell:getAttribute("fillIcon")
     if iconCell ~= nil then
         local file = fillIconFile(row.ft)
