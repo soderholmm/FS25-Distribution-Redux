@@ -14835,10 +14835,11 @@ function SmartDistribution.modeConfigurable(asset, ft, role)
     -- A SEALED BUNKER HAS NO OUTPUT TO CONFIGURE: its mode cannot act until the heap is
     -- opened, so no Advanced Outputs route exists for it (a Distribute pre-set just waits).
     if SmartDistribution.isBunkerSiloPlaceable ~= nil and SmartDistribution.bunkerStage ~= nil
-       and SmartDistribution.isBunkerSiloPlaceable(asset)
-       and (SmartDistribution.bunkerStage(asset) == "filling"
-            or SmartDistribution.bunkerStage(asset) == "fermenting") then
-        return false
+        and SmartDistribution.isBunkerSiloPlaceable(asset)
+        and (SmartDistribution.bunkerStage(asset) == "filling"
+        or SmartDistribution.bunkerStage(asset) == "fermenting"
+        or SmartDistribution.bunkerStage(asset) == "fermented") then
+            return false
     end
 
     local pp = getProductionPoint(asset)
@@ -20076,7 +20077,8 @@ function SmartDistribution.outputLinkStatus(p, ft, window, role)
     -- takes effect the moment the heap is opened.
     if SmartDistribution.isBunkerSiloPlaceable ~= nil and SmartDistribution.isBunkerSiloPlaceable(p) then
         local stage = (SmartDistribution.bunkerStage ~= nil) and SmartDistribution.bunkerStage(p) or nil
-        if stage == "filling" or stage == "fermenting" then return nil end
+        local s = stage
+        if s == "filling" or s == "fermenting" or s == "fermented" then return nil end
     end
 
     local L, M = SmartDistribution.LINK, MODE
@@ -20683,9 +20685,27 @@ function SmartDistribution.bunkerStage(p)
     local silo = SmartDistribution.bunkerSiloObject(p)
     local state = silo ~= nil and silo.state or nil
     if state == nil then return nil end
-    if state == SmartDistribution.BUNKER_STATE_DRAIN then return "draining" end
-    if state == SmartDistribution.BUNKER_STATE_FILL then return "filling" end
-    return "fermenting"  -- BUNKER_STATE_CLOSED (1) and BUNKER_STATE_FERMENTED (2)
+    -- The four base states map onto four distinct stages; CLOSED and FERMENTED are NOT
+    -- the same thing. CLOSED (1) means fermentation is in progress; FERMENTED (2) means it
+    -- is complete and the heap is fermenting-product ready to uncover. Collapsing them
+    -- made the mode cell keep reading "Fermenting" at 100%.
+    if state == SmartDistribution.BUNKER_STATE_DRAIN     then return "draining"  end
+    if state == SmartDistribution.BUNKER_STATE_FILL      then return "filling"   end
+    if state == SmartDistribution.BUNKER_STATE_FERMENTED then return "fermented" end
+    return "fermenting"  -- BUNKER_STATE_CLOSED (1): fermentation in progress
+
+end
+
+-- Is this bunker still sealed (not yet open)? A sealed heap -- filling, fermenting, or
+-- fully fermented but still covered -- is not a sender and has no actionable output mode.
+-- Whether it is editable below is a UI decision, not a property of the building, so any
+-- caller that wants per-stage labels still calls bunkerStage.
+function SmartDistribution.bunkerIsSealed(p)
+    if SmartDistribution.isBunkerSiloPlaceable == nil
+       or SmartDistribution.bunkerStage == nil
+       or not SmartDistribution.isBunkerSiloPlaceable(p) then return false end
+    local s = SmartDistribution.bunkerStage(p)
+    return s == "filling" or s == "fermenting" or s == "fermented"
 end
 
 -- Take up to `wanted` litres of silage from this placeable's uncovered bays. Removal is metered by
