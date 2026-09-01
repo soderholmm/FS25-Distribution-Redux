@@ -3257,7 +3257,7 @@ local function getActiveHourlyConsumption(pp, ft)
                     -- is invisible in the summed figure -- print it so a half-rate demand names its own
                     -- cause instead of needing to be inferred from a day of totals.
                     if SmartDistribution.debug then
-                        log("  demand %s [%s] line=%s amount=%.1f x cph=%.3f%s -> %.1f/h%s",
+                        log(" demand %s [%s] line=%s amount=%.1f x cph=%.3f%s -> %.1f/h%s",
                             placeableName(pp.owningPlaceable), fillTypeName(ft),
                             tostring(production.name or production.id or "?"),
                             input.amount or 0, cph,
@@ -14832,6 +14832,15 @@ end
 -- Sell / Hold / Hold Internal / Market-less setups have nothing to arrange, so no button.
 function SmartDistribution.modeConfigurable(asset, ft, role)
     if asset == nil or ft == nil then return false end
+    -- A SEALED BUNKER HAS NO OUTPUT TO CONFIGURE: its mode cannot act until the heap is
+    -- opened, so no Advanced Outputs route exists for it (a Distribute pre-set just waits).
+    if SmartDistribution.isBunkerSiloPlaceable ~= nil and SmartDistribution.bunkerStage ~= nil
+       and SmartDistribution.isBunkerSiloPlaceable(asset)
+       and (SmartDistribution.bunkerStage(asset) == "filling"
+            or SmartDistribution.bunkerStage(asset) == "fermenting") then
+        return false
+    end
+
     local pp = getProductionPoint(asset)
     -- usesVMode, NOT `pp ~= nil` -- THE FIFTH SITE OF THAT FAULT, and the one with the worst symptom.
     -- On a pass-through store a TANK product has no v-mode, so this resolved a stale/derived one, decided
@@ -18604,9 +18613,9 @@ function SmartDistribution.drawStorageBar(cell, p, ft, role, side, held)
     -- XML declaration order is reserve, target, max, so where two coincide the ceiling stays visible.
     setMark("barReserve", v.reserve, wantOut, false)
     setMark("barTarget",  v.target,  wantIn,  false)
-    -- MAX is drawn even when unset: an unconfigured product still HAS a ceiling (the full tank) and the
-    -- player should see it exists before moving it. A target or reserve never set has nothing to point at.
-    setMark("barMax",     v.capL,    wantIn,  true)
+    -- noMaxMark is the open bunker: no ceiling, so no ceiling mark. nil for every other
+    -- building, so the line behaves exactly as before (drawn even when unset).
+    setMark("barMax", v.capL, wantIn and not v.noMaxMark, not v.noMaxMark)
 
     -- FULL LITRES, then the share in brackets. NOT the mod's kL rule (5.56) -- a deliberate exception,
     -- asked for twice: the bar already carries the magnitude, and this label is where the exact litre
@@ -18617,12 +18626,38 @@ function SmartDistribution.drawStorageBar(cell, p, ft, role, side, held)
         repeat t, k = t:gsub("^(-?%d+)(%d%d%d)", "%1,%2") until k == 0
         return t
     end
-    local pc = math.floor(frac(v.held) * 100 + 0.5)
+
+    -- THE PERCENT, AS A THREE-WAY CHOICE. An override (v.pctText) replaces the share
+    -- arithmetic outright -- a bunker's % is its compaction / fermentation progress, not
+    -- held/capacity. v.noPct drops it entirely -- an open heap has no max to be a share
+    -- of. Everything else keeps the held/total share exactly as before.
     local pctText
-    if pc <= 0 and v.held > 0 then pctText = SmartDistribution.l10n("dr_pct_lessThanOne", "<1%")
-    else pctText = string.format("%d%%", pc) end
-    label(heldT, string.format("%s L (%s)", grouped(v.held), pctText))
-    label(capT,  string.format("%s L", grouped(v.total)))
+    if v.pctText ~= nil then
+        pctText = v.pctText
+    elseif v.noPct then
+        pctText = nil
+    else
+        local pc = math.floor(frac(v.held) * 100 + 0.5)
+        if pc <= 0 and v.held > 0 then
+            pctText = SmartDistribution.l10n("dr_pct_lessThanOne", "<1%")
+        else
+            pctText = string.format("%d%%", pc)
+        end
+    end
+    if pctText ~= nil then
+        label(heldT, string.format("%s L (%s)", grouped(v.held), pctText))
+    else
+        label(heldT, string.format("%s L", grouped(v.held)))
+    end
+    -- noCapText: the right-hand figure would just repeat the amount (the track IS the
+    -- fill), and printing it twice would re-assert a max that does not exist.
+    if v.noCapText then
+        label(capT, "")
+    else
+        label(capT,  string.format("%s L", grouped(v.total)))
+    end
+
+
 end
 
 -- " (1/4)" -- how many of this output's routable destinations are ACTIVE, of all of them. Appended to the
@@ -18686,6 +18721,7 @@ function SmartDistribution.storageBarValues(p, ft, role)
         for _, u in ipairs(SmartDistribution.bunkerUnits()) do
             if u.p == p then cap = cap + (tonumber(u.silo.capacity) or 0) end
         end
+
         -- THE BAR DRAWS WHAT THE HEAP HOLDS, not what assetHeld answers. While filling
         -- or sealed, assetHeld reads 0 on the row the player is looking at (the heap is
         -- not product yet / the terrain read is under the tarp), which zeroed the total
@@ -18696,17 +18732,60 @@ function SmartDistribution.storageBarValues(p, ft, role)
         if bh ~= nil then held = bh end
         if cap <= 0 then cap = held end
         if SmartDistribution.debug then
-            log("[SmartDistribution] storageBarValues bunker %s: ft=%s cap=%.0f held=%.0f",
+            log("storageBarValues bunker %s: ft=%s cap=%.0f held=%.0f",
                 placeableName(p), tostring(ft), cap, held)
         end
-        return { total = cap, held = held, others = 0, capL = cap, pct = 100,
+        
+        -- THE PERCENT IS THE PROCESS, NOT THE SHARE. Field names and semantics confirmed
+        -- against the base object (BunkerSilo HUD's read of it): compactedPercent is already
+        -- 0..100, fermentingPercent is 0..1. Compaction is the number that matters while
+        -- FILLING, fermentation progress while sealed. Once OPEN there is no capacity
+        -- ceiling at all -- the heap can outgrow the nominal size -- so the share, the
+        -- track and the capacity label all go and only the amount remains.
+        local stage = (SmartDistribution.bunkerStage ~= nil) and SmartDistribution.bunkerStage(p) or nil
+        if stage == "draining" then
+            -- OPEN BUNKER: no real capacity ceiling exists, but a bare amount with no track
+            -- reads as broken next to every other row. So the track is drawn against the
+            -- fill itself -- the bar reads full, which is the honest picture (the heap IS
+            -- everything there is) -- while the % and the max stay hidden: there is no max
+            -- to be a share of.
+            local track = (held > 0) and held or cap
+            if SmartDistribution.debug then
+                log("storageBarValues bunker %s: draining (open heap: full-width track, no percent/max)",
+                    placeableName(p))
+            end
+            return { total = track, held = held, others = 0, capL = nil,
+                     noPct = true, noCapText = true, noMaxMark = true,
+                     blocked = false, target = nil, reserve = nil }
+        end
+
+        local pctText = nil
+        local siloObj = SmartDistribution.bunkerSiloObject(p)
+        if siloObj ~= nil then
+            if stage == "filling" then
+                local pct = math.min(100, math.max(0, tonumber(siloObj.compactedPercent) or 0))
+                pctText = string.format(SmartDistribution.l10n("dr_bunker_compactPct", "Compacted %d%%"), math.floor(pct + 0.5))
+            else
+                local pct = math.min(100, math.max(0, (tonumber(siloObj.fermentingPercent) or 0) * 100))
+                pctText = string.format(SmartDistribution.l10n("dr_bunker_fermentPct", "Fermenting %d%%"), math.floor(pct + 0.5))
+            end
+        end
+        if SmartDistribution.debug then
+            log("storageBarValues bunker %s: stage=%s pctText=%s",
+                placeableName(p), tostring(stage), tostring(pctText))
+        end
+        -- NO MAX MARK AND NO CAPACITY FIGURE: the bar is a process view (compaction /
+        -- fermentation), not a tank share -- a MAX line and a right-hand capacity number
+        -- would read as a fill target nothing enforces. The track still scales to the
+        -- bunker's declared size.
+        return { total = cap, held = held, others = 0, capL = nil, noMaxMark = true,
+                 noCapText = true,
+                 pctText = pctText, noPct = (pctText == nil),
                  blocked = false, target = nil, reserve = nil }
+
     end
 
-
-
     local total, others = nil, 0
-
     local cap, pool = SmartDistribution.inputProductCapacity(p, ft, role)
 
     if pool ~= nil and type(pool.fts) == "table" then
@@ -18812,6 +18891,7 @@ function SmartDistribution.storageBarValues(p, ft, role)
     return { total = total, held = held, others = others, capL = capL, pct = pct,
              blocked = blocked, target = target, reserve = reserve }
 end
+
 
 function SmartDistribution.inputEffectiveMaxLiters(p, ft, role)
     if SmartDistribution._legacyInputMath then
@@ -19988,6 +20068,17 @@ end
 -- every call rather than being short-circuited for an active row.
 function SmartDistribution.outputLinkStatus(p, ft, window, role)
     if p == nil or ft == nil then return nil end
+    -- A SEALED BUNKER IS NOT A SENDER: nothing can leave until the heap is opened
+    -- (bunkerTakeSilage pulls only from an open silo; bunkerPlaceableSilage reads 0 while
+    -- sealed), so the output status answers NIL -- which every status cell renders as "-"
+    -- -- rather than "Idle"/"Blocked"/a destination count, words that would claim a state
+    -- nothing enforces. The mode itself stays stored and shown, so a Distribute pre-set
+    -- takes effect the moment the heap is opened.
+    if SmartDistribution.isBunkerSiloPlaceable ~= nil and SmartDistribution.isBunkerSiloPlaceable(p) then
+        local stage = (SmartDistribution.bunkerStage ~= nil) and SmartDistribution.bunkerStage(p) or nil
+        if stage == "filling" or stage == "fermenting" then return nil end
+    end
+
     local L, M = SmartDistribution.LINK, MODE
     local pp = getProductionPoint(p)
     if pp ~= nil and SmartDistribution.usesVMode(p, ft) then
@@ -20492,7 +20583,7 @@ function SmartDistribution.bunkerHeapLiters(p)
         end
     end
     if SmartDistribution.debug then
-        log("[SmartDistribution] bunkerHeapLiters %s: cached=%.0f", placeableName(p), total)
+        log("bunkerHeapLiters %s: cached=%.0f", placeableName(p), total)
     end
     if total > 0 then return total end
     -- Fallback: read the heap directly. The terrain's fill TYPE can be unreadable
@@ -20517,7 +20608,7 @@ function SmartDistribution.bunkerHeapLiters(p)
         end
     end
     if SmartDistribution.debug then
-        log("[SmartDistribution] bunkerHeapLiters %s: fallback=0 (terrain read failed)", placeableName(p))
+        log("bunkerHeapLiters %s: fallback=0 (terrain read failed)", placeableName(p))
     end
     return 0
 end
@@ -20558,7 +20649,7 @@ function SmartDistribution.bunkerHeldForDisplay(p, ft)
     local ouf = SmartDistribution.bunkerOutputFillType(p)
     if ouf ~= nil and ft == ouf then return heap end
     if SmartDistribution.debug then
-        log("[SmartDistribution] bunkerHeldForDisplay %s: stage=%s heap=%.0f heapFt=%s in=%s out=%s ft=%s -> 0",
+        log("bunkerHeldForDisplay %s: stage=%s heap=%.0f heapFt=%s in=%s out=%s ft=%s -> 0",
             placeableName(p), tostring(stage), heap,
             tostring(heapFt), tostring(inf), tostring(ouf), tostring(ft))
     end
@@ -20597,7 +20688,6 @@ function SmartDistribution.bunkerStage(p)
     return "fermenting"  -- BUNKER_STATE_CLOSED (1) and BUNKER_STATE_FERMENTED (2)
 end
 
-
 -- Take up to `wanted` litres of silage from this placeable's uncovered bays. Removal is metered by
 -- read-only search (bunkerBandForLiters) then measured before/after, because removeFromGroundByArea's
 -- return value is unreliable -- it reported 0 while removing 4,746 L. Only the measured delta is credited,
@@ -20635,7 +20725,7 @@ function SmartDistribution.bunkerTakeSilage(p, ft, wanted)
                     local got = math.max(0, before - after)
                     if got <= 0 then
                         if tried and SmartDistribution.debug then
-                            log("[SmartDistribution] clearArea moved nothing; falling back to removeFromGroundByArea")
+                            log("clearArea moved nothing; falling back to removeFromGroundByArea")
                         end
                         pcall(util.removeFromGroundByArea, sx, sz, wx, wz, hx, hz, ft)
                         after = SmartDistribution.bunkerBandLiters(silo, ft, 0, 1)

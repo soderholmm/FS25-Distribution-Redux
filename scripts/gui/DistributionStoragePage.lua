@@ -441,9 +441,10 @@ local function setCombinedStatusCell(cell, placeable, ft, window, role)
         -- the OUT half also says how many destinations are live: "Send (1/4)". A market has none, so
         -- outputDestCountText returns nothing there and the word itself becomes "Sold".
         local suffix = ""
-        if dir == "OUT" and SmartDistribution.outputDestCountText ~= nil then
+        if dir == "OUT" and st ~= nil and SmartDistribution.outputDestCountText ~= nil then
             suffix = SmartDistribution.outputDestCountText(placeable, ft, role, st) or ""
         end
+
         if c.setText ~= nil then c:setText(shortStatus(st, dir, isMkt) .. suffix) end
         if c.setTextColor == nil then return end
         local col = (st ~= nil) and COL[st] or nil
@@ -695,6 +696,14 @@ function DistributionStoragePage:populateCellForItemInSection(list, section, ind
        and row.ft ~= SmartDistribution.bunkerOutputFillType(self.selectedAsset) then
         bunkerInputRow = true
     end
+    -- WHILE FILLING / FERMENTING, EVERY ROW IS INFORMATIONAL: the mode cannot act yet, so
+    -- every row shows the stage label and an orange tint, not the stored mode.
+    if SmartDistribution.isBunkerSiloPlaceable ~= nil and SmartDistribution.bunkerStage ~= nil
+       and SmartDistribution.isBunkerSiloPlaceable(self.selectedAsset)
+       and (SmartDistribution.bunkerStage(self.selectedAsset) == "filling"
+            or SmartDistribution.bunkerStage(self.selectedAsset) == "fermenting") then
+        bunkerInputRow = true
+    end
 
     setc("fillName", row.name)
     -- STORAGE TYPE, abbreviated. Role-scoped like every other read on this row: without the role a
@@ -908,6 +917,10 @@ function DistributionStoragePage:stepRowMode(dir, ...)
     local el = clickedArrow(...)
     local ft = (el ~= nil) and el.sdFillType or nil
     if ft == nil or self.selectedAsset == nil then return end
+    if SmartDistribution.isBunkerSiloPlaceable ~= nil
+       and SmartDistribution.bunkerStage ~= nil
+       and SmartDistribution.isBunkerSiloPlaceable(self.selectedAsset) then return end
+    local s = SmartDistribution.bunkerStage(self.selectedAsset); if s == "filling" or s == "fermenting" then return end
     local cur = SmartDistribution.resolvedAssetMode(self.selectedAsset, ft, self.selectedRole)
     local nxt
     if dir < 0 then
@@ -952,6 +965,10 @@ DistributionStoragePage.MODE_KEYS_ENABLED = true
 function DistributionStoragePage:onCycleSelectedBack()
     local row = self:selectedDetailRow()
     if row == nil or self.selectedAsset == nil then return end
+    if SmartDistribution.isBunkerSiloPlaceable ~= nil
+       and SmartDistribution.bunkerStage ~= nil
+       and SmartDistribution.isBunkerSiloPlaceable(self.selectedAsset) then return end
+    local s = SmartDistribution.bunkerStage(self.selectedAsset); if s == "filling" or s == "fermenting" then return end
     if SmartDistribution.cyclePrevForAsset == nil then return end
     local cur = SmartDistribution.resolvedAssetMode(self.selectedAsset, row.ft, self.selectedRole)
     local nxt = SmartDistribution.cyclePrevForAsset(self.selectedAsset, cur, row.ft, self.selectedRole)
@@ -966,6 +983,11 @@ end
 function DistributionStoragePage:onCycleSelected()
     local row = self:selectedDetailRow()
     if row == nil or self.selectedAsset == nil then return end
+    if SmartDistribution.isBunkerSiloPlaceable ~= nil
+       and SmartDistribution.bunkerStage ~= nil
+       and SmartDistribution.isBunkerSiloPlaceable(self.selectedAsset) then return end
+    local s = SmartDistribution.bunkerStage(self.selectedAsset)
+    if s == "filling" or s == "fermenting" then return end
     local cur = SmartDistribution.resolvedAssetMode(self.selectedAsset, row.ft, self.selectedRole)
     local nxt = (SmartDistribution.cycleNextForAsset and SmartDistribution.cycleNextForAsset(self.selectedAsset, cur, row.ft, self.selectedRole))
                 or SmartDistribution.cycleNext(cur)
