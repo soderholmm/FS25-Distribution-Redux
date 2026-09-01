@@ -582,12 +582,6 @@ function DistributionStoragePage:buildDetailRows()
     for ft in pairs(fts) do ordered[#ordered + 1] = ft end
     table.sort(ordered)
     self.rows = buildProductRows(asset, ordered, self.selectedRole)
-    -- DEBUG: confirm the bunker's rows reach the page (SmartDistribution.log is the exposed logger)
-    if SmartDistribution.debug and SmartDistribution.isBunkerSiloPlaceable ~= nil
-       and SmartDistribution.isBunkerSiloPlaceable(asset) then
-        SmartDistribution.log("[SmartDistribution] buildDetailRows bunker: %d row(s), role=%s",
-            #self.rows, tostring(self.selectedRole))
-    end
 end
 
 function DistributionStoragePage:selectAsset(index)
@@ -712,60 +706,16 @@ function DistributionStoragePage:populateCellForItemInSection(list, section, ind
     local e = self:windowStats(row.ft)
     setc("recvText", fmtV(e.received))
     setc("distText", outTotalText(e))
-    -- Determine the held amount to show in the storage bar.
-    -- For a bunker silo that is filling/fermenting we want to display the
-    -- amount of material actually present in the heap (the INPUT fill type)
-    -- even when the row being rendered is the OUTPUT fill type.
-    local barHeld = nil
-    local outFT = nil
-    local inFT = nil
+    -- Held amount for the storage bar. assetHeld answers every ordinary building; a
+    -- bunker silo owns no Storage, so bunkerHeldForDisplay returns the heap amount for
+    -- the row the heap actually holds (nil for non-bunkers, so the figure stands).
+    local barHeld = 0
     if SmartDistribution.assetHeld ~= nil then
-        barHeld = SmartDistribution.assetHeld(self.selectedAsset, row.ft)
-        if SmartDistribution.isBunkerSiloPlaceable ~= nil
-           and SmartDistribution.isBunkerSiloPlaceable(self.selectedAsset)
-           and SmartDistribution.bunkerStage ~= nil then
-            local stage = SmartDistribution.bunkerStage(self.selectedAsset)
-            if stage == "filling" or stage == "fermenting" then
-                outFT = SmartDistribution.bunkerOutputFillType ~= nil
-                        and SmartDistribution.bunkerOutputFillType(self.selectedAsset) or nil
-                if outFT ~= nil and row.ft == outFT then
-                    inFT = SmartDistribution.bunkerInputFillType ~= nil
-                           and SmartDistribution.bunkerInputFillType(self.selectedAsset) or nil
-                    if inFT == nil then
-                        inFT = 119  -- temporary; replace with dynamic when working
-                    end
-                    if inFT ~= nil then
-                        barHeld = SmartDistribution.assetHeld(self.selectedAsset, inFT) or 0
-                    end
-                end
-            end
+        barHeld = SmartDistribution.assetHeld(self.selectedAsset, row.ft) or 0
+        if SmartDistribution.bunkerHeldForDisplay ~= nil then
+            local bh = SmartDistribution.bunkerHeldForDisplay(self.selectedAsset, row.ft)
+            if bh ~= nil then barHeld = bh end
         end
-    end
-    if barHeld == nil then barHeld = 0 end
-    -- Force bunker fermenting/filling rows to show actual heap amount
-    if SmartDistribution.bunkerStage ~= nil and SmartDistribution.isBunkerSiloPlaceable ~= nil
-       and SmartDistribution.isBunkerSiloPlaceable(self.selectedAsset) then
-        local stage = SmartDistribution.bunkerStage(self.selectedAsset)
-        if stage == "filling" or stage == "fermenting" then
-            local bs = self.selectedAsset.spec_bunkerSilo
-            local silo = bs ~= nil and bs.bunkerSilo or nil
-            if silo == nil then
-                local ms = self.selectedAsset.spec_multiBunkerSilo
-                if ms ~= nil and type(ms.bunkerSilos) == "table" then silo = ms.bunkerSilos[1] end
-            end
-            if silo ~= nil then
-                local lvl = tonumber(silo.fillLevel) or 0
-                if lvl > 0 then barHeld = lvl end
-            end
-        end
-    end
-    if SmartDistribution.debug then
-        log("[SmartDistribution] barHeld=%s stage=%s ft=%s inFT=%s outFT=%s",
-            tostring(barHeld),
-            tostring(SmartDistribution.bunkerStage ~= nil and SmartDistribution.bunkerStage(self.selectedAsset) or "N/A"),
-            tostring(row.ft),
-            tostring(inFT or "N/A"),
-            tostring(outFT or "N/A"))
     end
     setStorageBar(cell, self.selectedAsset, row.ft, self.selectedRole, nil, barHeld)
 
