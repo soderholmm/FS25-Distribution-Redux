@@ -9646,12 +9646,12 @@ function SmartDistribution.palletSpawnReady(asset, ft)
     if pp ~= nil then
         local cap  = SmartDistribution.palletCapacityFor(pp, ft)
         local held = (pp.getFillLevel ~= nil and pp:getFillLevel(ft)) or 0
-        return cap ~= nil and cap > 0 and held >= SmartDistribution.PALLET_SPAWN_MIN_L
+        return cap ~= nil and cap > 0 and held >= math.min(SmartDistribution.PALLET_SPAWN_MIN_L, cap)
     end
     if asset.spec_husbandryPallets ~= nil then
         local cap  = SmartDistribution.palletCapacityForHusbandry(asset, ft)
         local held = SmartDistribution.palletPendingLiters(asset, ft)
-        return cap ~= nil and cap > 0 and held >= SmartDistribution.PALLET_SPAWN_MIN_L
+        return cap ~= nil and cap > 0 and held >= math.min(SmartDistribution.PALLET_SPAWN_MIN_L, cap)
     end
     if asset.spec_objectStorage ~= nil then
         local held = (SmartDistribution.shedStoredLiters ~= nil) and SmartDistribution.shedStoredLiters(asset, ft) or 0
