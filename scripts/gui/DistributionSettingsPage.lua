@@ -240,15 +240,57 @@ function DistributionSettingsPage:activeExtRows()
     return (ok and type(rows) == "table") and rows or {}
 end
 
+---Give the rows back the strip's space when there is no strip.
+--
+-- The 46px is reserved by the LAYOUT PROFILE (SDSettingsLayoutTabbed shrinks the
+-- ScrollingLayout from the top), so suppressing the buttons alone leaves a gap
+-- where the strip would have been.
+--
+-- applyProfile RE-READS absoluteSizeOffset and the pivot from the new profile
+-- (GuiElement.lua:322), and fs25_settingsLayout declares an absoluteSizeOffset of
+-- its own ("90px 0px"), so the swap RESETS the 46px rather than inheriting it --
+-- loadProfile keeps the CURRENT value only for a key the new profile omits, which
+-- is the trap to check before reusing this on another element. `with=` traits are
+-- baked into the profile's values at load (GuiProfile.lua:57), so the pivot comes
+-- across too.
+--
+-- THEN setSize(), AND IT IS NOT OPTIONAL: updateAbsolutePosition recomputes
+-- anchorDeltas only when that list is EMPTY (GuiElement.lua:1050), so on an
+-- element the layout has already placed it rebuilds from the STALE deltas and the
+-- size just resolved is ignored. setSize calls updateAnchorDeltas first (:1179),
+-- which is the supported way to resize something already on screen. This is
+-- 5.87c's trap one function over, where the symptom was a fix that silently did
+-- nothing. No arguments: setSize defaults to the element's own size, so this
+-- re-applies what applyProfile just computed rather than naming a number here.
+--
+-- Children are left to the BoxLayout re-flow that follows in refreshPageTabs
+-- (updateChildAnchorDeltas defaults to false), which is what places the rows.
+function DistributionSettingsPage:applyStripSpace(hasStrip)
+    local el = self.boxLayout
+    if el == nil or el.applyProfile == nil then return end
+    local want = hasStrip and "SDSettingsLayoutTabbed" or "fs25_settingsLayout"
+    if el.profile == want then return end
+    pcall(el.applyProfile, el, want, false, true)
+    if el.setSize ~= nil then pcall(el.setSize, el) end
+end
+
+
 ---Paint the strip from the registry, then show whichever set of rows belongs to
 -- the active tab.
 function DistributionSettingsPage:refreshPageTabs()
     local list, labels = tabList(), {}
     for i, t in ipairs(list) do labels[i] = t.label end
     if self.currentTab == nil or self.currentTab > #list then self.currentTab = 1 end
+    local shown = 0
     if SmartDistribution ~= nil and SmartDistribution.drawPageTabs ~= nil then
-        SmartDistribution.drawPageTabs(self, labels, self.currentTab)
+        shown = SmartDistribution.drawPageTabs(self, labels, self.currentTab) or 0
     end
+    -- THE LIVE FIGURE AGAIN: the strip is back above the content, so this layout has to
+    -- give up 46px whenever one is showing and take them back when it is not. Every other
+    -- page moves its own children down by that amount in the XML; this one cannot, because
+    -- its rows live in a ScrollingLayout that fills the container, so it is shrunk from the
+    -- TOP instead (applyProfile then setSize, 5.87c / 5.90).
+    self:applyStripSpace(shown > 0)
 
     -- DR's own rows are visible only on DR's own tab, and a foreign tab's rows
     -- only on its own. Both sets live in the SAME ScrollingLayout so that one
@@ -321,6 +363,19 @@ function DistributionSettingsPage:onPageTab1() self:selectPageTab(1) end
 function DistributionSettingsPage:onPageTab2() self:selectPageTab(2) end
 function DistributionSettingsPage:onPageTab3() self:selectPageTab(3) end
 function DistributionSettingsPage:onPageTab4() self:selectPageTab(4) end
+function DistributionSettingsPage:onPageTab5() self:selectPageTab(5) end
+function DistributionSettingsPage:onPageTab6() self:selectPageTab(6) end
+
+---Which registry key this page's strip reads. The menu's A / D handler asks the
+-- CURRENT page for this, so one key handler serves every tabbed page and none of
+-- them has to know about the keys (Gui:keyEvent reaches the menu, not the frame,
+-- which is why the handler lives there at all -- 5.64).
+function DistributionSettingsPage:pageTabKey() return "settings" end
+
+---The two arrow buttons. Same call the keys make, so a click and a key press
+-- cannot come to disagree about what "next" means.
+function DistributionSettingsPage:onPageTabPrev() SmartDistribution.stepPageTab(self, "settings", -1) end
+function DistributionSettingsPage:onPageTabNext() SmartDistribution.stepPageTab(self, "settings",  1) end
 
 ---The base game's setting tooltip is `anchorTopRight`, 580px wide at +650px --
 -- geometry tuned for its OWN settings screen. In DR's page that box runs past the
@@ -422,15 +477,31 @@ function DistributionSettingsPage:onFrameOpen()
     if SmartDistribution ~= nil then SmartDistribution._settingsPage = self end
     ownTab()
     self:refreshPageTabs()
-    -- refreshPageTabs above already clamped whichever rows it made visible; this is
-    -- the belt for a page opened without a tab change ever happening.
-    self:clampVisibleTooltips()
-    if DistributionSettings == nil or DistributionSettings.getStateIndex == nil then return end
-    for id, element in pairs(self.settingElements) do
-        if element.setState ~= nil then
-            pcall(function() element:setState(DistributionSettings.getStateIndex(id)) end)
+    -- SEED DR'S OWN SELECTORS FIRST, THEN CLAMP. The order here was wrong and it is what made the
+    -- hints run off the page on DR's tab while Husbandry Redux's were fine -- which looked like the fix
+    -- having been applied to one mod and not the other, and is really one line in the wrong place.
+    --
+    -- setState re-lays the row, and updateAbsolutePosition then rebuilds absPosition from
+    -- `anchorDeltas` -- which are computed at LOAD and are not recomputed while that list is
+    -- non-empty (GuiElement.lua:1050). So a tooltip this function has already moved snaps straight
+    -- back to where the XML put it. The clamp reported success either way (36 moved, 0 stuck), because
+    -- the move genuinely did land -- and was then undone a few lines later.
+    --
+    -- IT ONLY EVER HIT DR'S OWN ROWS, and that asymmetry is the whole tell: this loop walks
+    -- `settingElements`, which is populated by onCreateSetting -- and the twelve EXTENSION rows
+    -- deliberately carry no onCreate (see the XML), so a provider's rows are not in it and were never
+    -- disturbed. Same page, same clamp, same code path; only DR's half was being un-fixed afterwards.
+    if DistributionSettings ~= nil and DistributionSettings.getStateIndex ~= nil then
+        for id, element in pairs(self.settingElements) do
+            if element.setState ~= nil then
+                pcall(function() element:setState(DistributionSettings.getStateIndex(id)) end)
+            end
         end
     end
+    -- LAST, unconditionally. The early `return` that used to sit above this loop meant a page opened
+    -- without DistributionSettings never reached anything after it either; there is nothing below
+    -- worth skipping, so the guard is now around the loop rather than around the rest of the function.
+    self:clampVisibleTooltips()
 end
 
 ---Re-seat every VISIBLE tooltip inside the list it is drawn in.
@@ -451,7 +522,7 @@ end
 -- THE ACTUAL BUG WAS THE TRIGGER, not the limit: this ran only from onFrameOpen,
 -- and the two tabs' rows share ONE layout with only one set visible at a time --
 -- so rows revealed by a TAB SWITCH were never measured at all. That is why the
--- Animal Redux hints were cut and DR's own were not.
+-- Husbandry Redux hints were cut and DR's own were not.
 --
 -- IDEMPOTENT, so running it on every switch is free: after the move the right edge
 -- is inside the limit and the next pass computes no overrun.
@@ -482,6 +553,10 @@ function DistributionSettingsPage:onOptionChanged(state, element)
     if DistributionControls ~= nil and DistributionControls.onMenuOptionChanged ~= nil then
         DistributionControls:onMenuOptionChanged(state, element)
     end
+    -- Moving a selector changes its displayed text, which can re-lay that row and revert its tooltip.
+    -- Cheap and idempotent (after a successful clamp the next pass computes no overrun), so it is run
+    -- rather than reasoned about -- the reasoning is what got the order wrong in onFrameOpen.
+    self:clampVisibleTooltips()
 end
 
 ---Redraw the extension rows of whichever settings page is open. Safe to call at
@@ -497,5 +572,10 @@ function SmartDistribution.refreshSettingsRows()
     local page = SmartDistribution._settingsPage
     if page == nil or page.renderExtRows == nil or page.activeExtRows == nil then return false end
     local ok = pcall(function() page:renderExtRows(page:activeExtRows()) end)
+    -- renderExtRows calls setState on every row it fills, which relays them and reverts any tooltip
+    -- the clamp had moved -- the same mechanism that was undoing DR's own rows in onFrameOpen. This
+    -- is the ASYNC path (a provider whose setter answers via a confirmation dialog), so without this
+    -- a hint could be correct on open and wrong again after the player answered a prompt.
+    if page.clampVisibleTooltips ~= nil then pcall(page.clampVisibleTooltips, page) end
     return ok
 end

@@ -76,6 +76,17 @@ DistributionSettings.SETTINGS = {
         values  = { true, false },
         strings = { "On", "Off" },
     },
+    -- Which surface the Advanced Inputs / Advanced Outputs buttons open: the routing GRAPH, or the two
+    -- classic list dialogs. WORLD state, synced like every other setting -- deliberately NOT localOnly.
+    -- A localOnly setting does not persist for an MP client (5.46), so a client would be handed the
+    -- graph again every session. Both surfaces write the same DistributionControlEvent, so the choice
+    -- changes which window opens and nothing else. Only meaningful while advancedRouting is On.
+    routingView = {
+        order   = 1.91,                                         -- directly under advancedRouting
+        default = 1,                                            -- Graph
+        values  = { true, false },
+        strings = { "Graph", "Classic lists" },
+    },
     radius = {
         order   = 2,
         default = 2,                                            -- 50 m
@@ -214,6 +225,34 @@ DistributionSettings.SETTINGS = {
         values  = { 0.5, 2, 10, -1 },
         strings = { "Live (0.5s)", "Normal (2s)", "Relaxed (10s)", "Manual only" },
     },
+    -- The HOURLY PASS PROFILER (5.89). Writes two lines to log.txt describing what the hourly pass
+    -- cost and -- the half that names a cause rather than a symptom -- how many world scans it made.
+    --
+    -- LOCAL ONLY, for menuRefresh's reason exactly: it is a diagnostic for the machine, not world
+    -- state the server owns. A player asked to help diagnose must be able to turn their OWN logging
+    -- on without the server overwriting it, and without changing anything for anyone else.
+    --
+    -- THREE STATES, NOT ON/OFF, and the middle one is the current shipped behaviour so nothing
+    -- changes by default:
+    --   Off              -- silent, including the one-time armed line. For a player who does not
+    --                       want DR writing to their log at all.
+    --   Slow passes only -- the default. Silent unless a pass exceeds PASS_PROFILE_MS (150 ms), so a
+    --                       healthy farm logs one armed line per session and nothing further. This is
+    --                       what catches a problem nobody has reported yet.
+    --   Every pass       -- the diagnostic setting: two lines per in-game hour whatever the cost.
+    --                       This is what to ask a player for, because it produces numbers on a farm
+    --                       that is behaving as well as one that is not, and the two can be compared.
+    --
+    -- HUSBANDRY REDUX CARRIES THE SAME TOGGLE and the two are OR'd, not overridden -- see
+    -- SmartDistribution.passProfilerLevel. Either one asking for more logging wins, so a player can
+    -- turn it on from whichever settings page they happen to have open.
+    passProfiler = {
+        localOnly = true,
+        order   = 9.95,
+        default = 2,                                            -- Slow passes only (today's behaviour)
+        values  = { 0, 1, 2 },
+        strings = { "Off", "Slow passes only", "Every pass (diagnostic)" },
+    },
     debugEnabled = {
         order   = 10,
         default = 2,                                            -- Disabled
@@ -302,6 +341,7 @@ function DistributionSettings.apply()
     g.includeMarkets    = DistributionSettings.includeMarkets
     g.includeMapStorage = DistributionSettings.includeMapStorage
     g.advancedRoutingEnabled = DistributionSettings.advancedRouting
+    g.routingView = DistributionSettings.routingView
     -- Advanced routing OFF resets every advanced input/output override to default (not just ignores them):
     -- clear the source blocks / priority + receiver input blocks / caps / targets. Runs after loadOverrides
     -- on load (source-file order) and on every settings change / MP sync, so an OFF state always means clean.
@@ -337,6 +377,11 @@ function DistributionSettings.apply()
     -- Clearing the adaptive backoff gives an explicit choice a fresh start rather than leaving it stretched
     -- by whatever the menu measured before -- the menu re-learns within a refresh or two if it needs to.
     g.menuRefresh      = DistributionSettings.menuRefresh
+    -- The profiler level is not read off S.global: it is OR'd with any other mod's request (Animal
+    -- Redux carries the same toggle), so it goes through the resolver rather than a plain field.
+    if SmartDistribution ~= nil and SmartDistribution.requestPassProfiler ~= nil then
+        SmartDistribution.requestPassProfiler("FS25_Distribution_Redux", DistributionSettings.passProfiler)
+    end
     if DistributionMenuPage ~= nil and DistributionMenuPage.resetRefreshPacing ~= nil then
         DistributionMenuPage.resetRefreshPacing()
     end
@@ -383,6 +428,7 @@ function DistributionSettings.saveLocal()
         return
     end
     setXMLFloat(xml, "distributionRedux.settings#menuRefresh", DistributionSettings.menuRefresh)
+    setXMLFloat(xml, "distributionRedux.settings#passProfiler", DistributionSettings.passProfiler)
     saveXMLFile(xml)
     delete(xml)
 end
@@ -444,6 +490,7 @@ function DistributionSettings.save(missionInfo)
     setXMLBool(xml,   "distributionRedux.settings#includeMarkets",    DistributionSettings.includeMarkets)
     setXMLBool(xml,   "distributionRedux.settings#includeMapStorage", DistributionSettings.includeMapStorage)
     setXMLBool(xml,   "distributionRedux.settings#advancedRouting",   DistributionSettings.advancedRouting)
+    setXMLBool(xml,   "distributionRedux.settings#routingView",       DistributionSettings.routingView)
     setXMLInt(xml,    "distributionRedux.settings#radius",      DistributionSettings.radius)
     setXMLInt(xml,    "distributionRedux.settings#bufferHours", DistributionSettings.bufferHours)
     setXMLBool(xml,   "distributionRedux.settings#sellEnabled", DistributionSettings.sellEnabled)
@@ -490,6 +537,9 @@ local function readWorldSettings(xml)
 
     local advRouting = getXMLBool(xml, "distributionRedux.settings#advancedRouting")
     if advRouting ~= nil then DistributionSettings.advancedRouting = advRouting end
+
+    local routingView = getXMLBool(xml, "distributionRedux.settings#routingView")
+    if routingView ~= nil then DistributionSettings.routingView = routingView end
 
     local radius = getXMLInt(xml, "distributionRedux.settings#radius")
     if radius ~= nil and isAllowed("radius", radius) then DistributionSettings.radius = radius end
@@ -572,6 +622,8 @@ local function readLocalSettings()
     -- absent in a settings file written before this option existed, so it simply keeps its default
     local refresh = getXMLFloat(xml, "distributionRedux.settings#menuRefresh")
     if refresh ~= nil and isAllowed("menuRefresh", refresh) then DistributionSettings.menuRefresh = refresh end
+    local prof = getXMLFloat(xml, "distributionRedux.settings#passProfiler")
+    if prof ~= nil and isAllowed("passProfiler", prof) then DistributionSettings.passProfiler = prof end
     delete(xml)
 end
 
@@ -807,8 +859,8 @@ DistributionControlEvent.ACT = {
     PRIO_MOVE   = 3,   -- a=source, b=dest, delta
     PRIO_CLEAR  = 4,   -- a=source
     INPUT_BLOCK = 5,   -- a=receiver, flag=blocked (receiver-side input block)
-    INPUT_CAP   = 6,   -- a=receiver, delta=pct 0..100 (receiver-side per-product max %)
-    INPUT_TARGET = 7,  -- a=receiver, delta=pct 0..100 (receiver-side fill target %); delta<0 clears
+    INPUT_CAP   = 6,   -- a=receiver, amount=LITRES (receiver-side per-product ceiling; <0 clears)
+    INPUT_TARGET = 7,  -- a=receiver, amount=LITRES (receiver-side fill target); amount<0 clears
     OUTPUT_RESERVE = 8, -- a=source, amount=litres the source keeps back; amount<=0 clears
 }
 
@@ -861,8 +913,10 @@ function DistributionControlEvent.applyLocal(act, a, ft, b, delta, flag, amount)
     elseif act == A.PRIO_MOVE   then SD.moveDestPriority(a, ft, b, delta)
     elseif act == A.PRIO_CLEAR  then SD.clearDestPriority(a, ft)
     elseif act == A.INPUT_BLOCK then SD.setInputBlocked(a, ft, flag)
-    elseif act == A.INPUT_CAP   then SD.setInputCapPct(a, ft, delta)
-    elseif act == A.INPUT_TARGET then SD.setInputTargetPct(a, ft, (delta ~= nil and delta >= 0) and delta or nil)   -- delta<0 clears
+    elseif act == A.INPUT_CAP   then SD.setInputCapLiters(a, ft, amount)
+    -- LITRES, in `amount`. A NEGATIVE figure clears it back to Off, which is how the wire says "no
+    -- target" -- a float32 has no nil, and Off is genuinely different from a target of 0 L.
+    elseif act == A.INPUT_TARGET then SD.setInputTargetLiters(a, ft, (amount ~= nil and amount >= 0) and amount or nil)
     elseif act == A.OUTPUT_RESERVE then SD.setOutputReserve(a, ft, (amount ~= nil and amount > 0) and amount or nil)  -- <=0 clears
     end
 end
@@ -1017,14 +1071,14 @@ function DistributionStateRequestEvent:run(connection)
                 if on then connection:sendEvent(DistributionControlEvent.new(A.INPUT_BLOCK, rcvUid, ft, "", 0, true)) end
             end
         end
-        for rcvUid, byFt in pairs(C.inputCapPct or {}) do   -- receiver-side per-product max %
-            for ft, pct in pairs(byFt) do
-                if type(pct) == "number" then connection:sendEvent(DistributionControlEvent.new(A.INPUT_CAP, rcvUid, ft, "", pct, false)) end
+        for rcvUid, byFt in pairs(C.inputCapL or {}) do   -- receiver-side per-product ceiling, LITRES
+            for ft, litres in pairs(byFt) do
+                if type(litres) == "number" then connection:sendEvent(DistributionControlEvent.new(A.INPUT_CAP, rcvUid, ft, "", 0, false, litres)) end
             end
         end
-        for rcvUid, byFt in pairs(C.inputTarget or {}) do   -- receiver-side fill target %
-            for ft, pct in pairs(byFt) do
-                if type(pct) == "number" then connection:sendEvent(DistributionControlEvent.new(A.INPUT_TARGET, rcvUid, ft, "", pct, false)) end
+        for rcvUid, byFt in pairs(C.inputTargetL or {}) do   -- receiver-side fill target, LITRES
+            for ft, litres in pairs(byFt) do
+                if type(litres) == "number" then connection:sendEvent(DistributionControlEvent.new(A.INPUT_TARGET, rcvUid, ft, "", 0, false, litres)) end
             end
         end
         for srcUid, byFt in pairs(C.outputReserve or {}) do   -- source-side output reserve (litres)

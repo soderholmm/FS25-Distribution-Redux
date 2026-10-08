@@ -1,6 +1,53 @@
 # CHANGELOG
 
-Changelog Last updated: 21/08/2026
+Changelog Last updated: 17/09/2026
+<h2><b>1.1.0.5 Release Candidate</b></h2>
+
+Added
+1) DR API v15 to support Husbandry Redux Changes
+2) Added hover over tooltips to all table cells that will show if the cell is cut off due to resolution or just pure text size.
+3) New performance fix to address hourly stutter on extremly large farms.
+
+<h2><b>1.1.0.4 Release Candidate</b></h2>
+
+Fixed
+1) Added back in the ability to manually load digestate from the BGA
+2) Added fixes for all-in-one cow barn and le mechet cow barns. Barns will now produce, store and distribute milk and manure as expected.
+
+Added
+1) Added new diagnostics for potential performance issues on large farms. Activate it in the settings and send me the log.txt if you have any issues.
+2) Added new API function V11 to support Husbandry Redux
+3) Added an indication of whether a production is parallel (i.e. individual inputs) or not (i.e. inputs split between lines) on the productions page.
+4) Rejigged the whole UI to support additional redux modules in future.
+5) Added fill bars to the overview to replace text.
+
+New
+1) Added a new advanced inputs/outputs management screen. This is optional, and you can switch back to the legacy page in the settings if you prefer that. The new advanced routing page is a graphical representation of the selected building and all of the inputs and outputs managed by DR. Includes:
+- A graphical representation of the flow of materials from the source building, into input storage, through the production, into output storage and on to the next building.
+- ability to double-click the source building or destination building to see the routing for that building. 
+- Drag and drop priorisation of outputs
+- scrollable inputs and outputs to support buildings with numerous inputs/outputs
+- Ability to just click on an input or output node to block it.
+- Colour coded connection lines that show material moved and link status.
+- Change to allow the player to input the exact target, max and reserve amounts rather than by percentage.
+- Block/activate All, and block/activate specific product buttons
+
+<h2><b>1.1.0.3 Release Candidate</b></h2>
+
+Fixed
+1) Simplified Chinese re-added to translations
+
+Added
+1) Production lines now drawn as icons and volumes with Tool tips added to icons (Thanks Martin!)
+2) Alphabetic, Locale Aware Lists (Thanks Martin!)
+3) API V10 Deployed to support AR
+
+<h2><b>1.1.0.2 Release Candidate</b></h2>
+Fixed
+1) Added fixes to pallet management that was creating lag spikes each hour. Please monitor and if you still see issues let me know.
+
+Added
+1) Added a performance logging feature. Can be turned on in settings (Always, only if lagging, off). Will write performance stats to the log for debugging purposes.
 
 <h2><b>1.1.0.1 Release Candidate</b></h2>
 
@@ -51,7 +98,7 @@ b) For inputs, if you set a max amount in advanced inputs an orange line on the 
 c) For outputs, if you set a reserve amount for that output, that will be indicated by a dark blue line on the bar for that output.
 NOTE: Storage type becomes very important to understanding this bar. Some storages are Pooled (ie there is an amount of total storage and any of the products placed in there will consume that storage). Then there are individual storages where the storage space is defined per product (you will never see a red bar on these). In some cases, advanced or modded buildings will have multiple storages and product can go into multiple storage types (e.g. Drive-In mod has 1 liquid and 2 general storages with some products able to go into all three). The UI will show this in the Storage Type column, e.g. Pool 1+2. The bar will represent the totals and fill levels for both of those pooled storages for the product. If some numbers seem off, check the storage type. EXAMPLE: The Drive-In Mod Silo has 25M litre total storage, but it is broken into 3 sub-storages. It has a general storage that takes pretty much everything (10M L), a smaller 5M L silo that holds a subset of those products (no idea why, ask the mod maker lol), and a 10M litre liquid store. Milk is flagged as being able to be stored by both the general storage and the liquid storage (again no idea why) so is marked Pool 1+3 with a total storage of 20M L (only the small 5M L tank cannot be used). Sugar beet on the other hand can only use the general storage so shows Pool 1 and only has a max capacity of 10M L.
 
-<h2><b>V1.1.0.0 Release</b></h2>
+<h2><b>V1.1.0.0 Modhub Release</b></h2>
 
 Fixed
 1) Corrected some broken calculations caused by how pallets work on the Building information screens. 
